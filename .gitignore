@@ -1,0 +1,63 @@
+### --- Unity Specifics --- ###
+[Aa]dministrator
+[Ll]ibrary
+[Tt]emp
+[Oo]bj
+[Bb]uild
+[Bb]uilds
+[Ll]ogs
+[MemoryCaptures]
+
+# Never ignore .meta files; they are required for Unity to track assets!
+[Aa]ssetsAssetStoreTools
+
+# Visual Studio  Rider  VS Code generated files
+.vs
+.gradle
+ExportedObj
+.consulo
+.csproj
+.unityproj
+.sln
+.suo
+.tmp
+.user
+.userprefs
+.pidb
+.booproj
+.svclog
+.pdb
+.opendb
+.IDB
+.VC.db
+
+# Unity Hardware Report
+sysinfo.txt
+
+### --- Python Specifics --- ###
+# Byte-compiled  optimized  DLL files
+__pycache__
+.py[cod]
+$py.class
+
+# Environments
+.venv
+venv
+ENV
+env
+pythonenv
+
+# Distribution  packaging
+dist
+build
+eggs
+.egg-info
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+### --- OS & IDE Specifics --- ###
+.DS_Store
+Thumbs.db
+.vscode
+.idea

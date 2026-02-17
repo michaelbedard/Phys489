@@ -1,0 +1,139 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> Result;
+Texture2D<float4> GradientTex;
+Texture2D<float4> EarthTex;
+SamplerState _LinearClamp;
+
+// UM PARAMETERS
+float Time;
+float C1;
+float H;
+
+static const float PI = 3.14159265359;
+
+// --- HELPER FUNCTIONS ---
+
+// 3D Hash: STANDARD (No Time variable here!)
+float hash(float3 p) {
+    p = frac(p * float3(123.34, 456.21, 789.12));
+    p += dot(p, p + 45.32);
+    return frac(p.x * p.y * p.z);
+}
+
+// 3D Gaussian: Deterministic (Same ID always gives same noise)
+float gaussian(float3 id) {
+    float u1 = hash(id + float3(0.0, 0.0, 0.0));
+    float u2 = hash(id + float3(1.0, 1.0, 1.0)); // Fixed offsets
+    
+    // Box-Muller
+    float r = sqrt(-2.0 * log(max(u1, 0.00001))); 
+    float theta = 2.0 * PI * u2;
+    return r * cos(theta);
+}
+
+// 3D Noise with Smooth Interpolation
+float smoothGaussianNoise(float3 pos) {
+    float3 gridId = floor(pos);
+    float3 f = frac(pos);
+    
+    // Smoothstep
+    f = f * f * (3.0 - 2.0 * f);
+
+    // Sample neighbors
+    float n000 = gaussian(gridId + float3(0,0,0));
+    float n100 = gaussian(gridId + float3(1,0,0));
+    float n010 = gaussian(gridId + float3(0,1,0));
+    float n110 = gaussian(gridId + float3(1,1,0));
+    float n001 = gaussian(gridId + float3(0,0,1));
+    float n101 = gaussian(gridId + float3(1,0,1));
+    float n011 = gaussian(gridId + float3(0,1,1));
+    float n111 = gaussian(gridId + float3(1,1,1));
+
+    // Trilinear Interpolation
+    float nx00 = lerp(n000, n100, f.x);
+    float nx10 = lerp(n010, n110, f.x);
+    float nx01 = lerp(n001, n101, f.x);
+    float nx11 = lerp(n011, n111, f.x);
+
+    float nxy0 = lerp(nx00, nx10, f.y);
+    float nxy1 = lerp(nx01, nx11, f.y);
+
+    return lerp(nxy0, nxy1, f.z);
+}
+
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    Result.GetDimensions(width, height);
+    
+    float2 uv = float2((float)id.x / width, (float)id.y / height);
+    
+    // Map to Sphere
+    float theta = uv.y * PI;      
+    float phi = uv.x * 2.0 * PI;  
+    
+    float3 spherePos;
+    spherePos.x = sin(theta) * cos(phi);
+    spherePos.y = cos(theta);            
+    spherePos.z = sin(theta) * sin(phi);
+
+    // --- ANIMATION FIX: SCROLL THE COORDINATES ---
+    // Instead of changing the hash seed, we rotate the sphere lookup
+    // This makes the clouds "drift" rather than strobe.
+    float rotationSpeed = 0.2;
+    float3 drift = float3(sin(Time * rotationSpeed), cos(Time * rotationSpeed), Time * 0.1);
+    
+    // Apply drift to the position used for noise sampling
+    float3 samplePos = spherePos + drift;
+
+    // --- CASCADE ---
+    float log_flux = 0.0;
+    float scale = 2.0; 
+    int octaves = 8;
+
+    float totalWeight = 0.0;
+    
+    for (int i = 0; i < octaves; i++)
+    {
+        float gamma_i = smoothGaussianNoise(samplePos * scale); 
+
+        float variance = C1 * 0.693147; 
+        float spectralWeight = pow(scale, -H);
+        
+        // Combine them
+        log_flux += (gamma_i * sqrt(variance)) * spectralWeight;
+        
+        // Track weight to keep values in a visible range
+        totalWeight += spectralWeight;
+
+        scale *= 2.0; 
+    }
+
+    if (totalWeight > 0.0) log_flux /= totalWeight;
+
+    // --- VISUALIZATION ---
+
+    // A. Sample the Earth Background (The "Blue Marble")
+    float4 earthColor = EarthTex.SampleLevel(_LinearClamp, uv, 0);
+
+    // B. Calculate Cloud Intensity from your Flux
+    // We map the math result (-1..1) to a 0..1 range for color lookup
+    // "saturate" clamps it so we don't get negative colors
+    float cloudVal = saturate((log_flux * 0.5) + 0.5); 
+    
+    // C. Get the Cloud Color (White/Grey) from your Gradient
+    float4 cloudColor = GradientTex.SampleLevel(_LinearClamp, float2(cloudVal, 0.5), 0);
+
+    // D. Calculate Opacity (Alpha)
+    // We want the dark parts of the cloud texture (warm air) to be transparent
+    // so we can see the Earth below.
+    // Logic: If cloudVal is low (warm), alpha is 0. If high (cold), alpha is 1.
+    // The "1.5 - 0.2" magic numbers just increase contrast so clouds look thicker.
+    float alpha = saturate(cloudVal * 1.5 - 0.2);
+
+    // E. Final Mix
+    // Lerp (Linear Interpolate) blends Earth and Cloud based on Alpha
+    Result[id.xy] = lerp(earthColor, cloudColor, alpha);
+}
