@@ -1,57 +1,77 @@
 ﻿import numpy as np
 import pyshtools as pysh
 import matplotlib.pyplot as plt
+from scipy.stats import linregress
 
-# 1. Load the Data
-print("Loading CSV data... (This might take a moment)")
-# Load the matrix we exported from Unity
+# --- PARAMETERS ---
+H_target = 0.5
+C1_target = 0.1
+
+# Theoretical Beta for Multiplicative Cascade
+# beta = 1 + 2H - 2C1
+beta_theory = 1.0 + 2.0 * H_target - 2.0 * C1_target
+print(f"Theoretical Slope: {beta_theory}")
+
+# --- 1. LOAD DATA ---
+print("Loading CSV...")
 data = np.loadtxt("AtmosphereData.csv", delimiter=",")
-
-print(f"Data Loaded. Shape: {data.shape}")
-
-# 2. Convert to Spherical Harmonic Coefficients
-# We tell pyshtools this data is on a regular grid (Equirectangular)
 grid = pysh.SHGrid.from_array(data)
-
-# Expand into spherical harmonics
-# This calculates the coefficients for every frequency 'l' (degree)
 coeffs = grid.expand()
-
-# 3. Calculate Power Spectrum
-# spectrum() returns the power per degree 'l'
 power_per_l = coeffs.spectrum()
 degrees = np.arange(len(power_per_l))
 
-# 4. Plotting (The Verification)
+# --- 2. DEFINE FITTING RANGE ---
+# CRITICAL: We only fit the 'straight' part of the graph.
+# We skip the first few (earth size) and the last few (resolution blur).
+fit_start = 8
+fit_end = 60    # Stop before the "drop off" seen in your plot around l=100
+
+x_fit = degrees[fit_start:fit_end]
+y_fit = power_per_l[fit_start:fit_end]
+
+# --- 3. LINEAR REGRESSION (Log-Log) ---
+# We fit log(y) = slope * log(x) + intercept
+log_x = np.log(x_fit)
+log_y = np.log(y_fit)
+
+slope, intercept, r_value, p_value, std_err = linregress(log_x, log_y)
+
+# The 'slope' here is negative (e.g., -1.7).
+# We usually talk about beta as positive, so beta_measured = -slope.
+beta_measured = -slope
+
+print(f"Measured Slope (Beta): {beta_measured:.4f}")
+print(f"R-squared: {r_value**2:.4f}")
+
+# --- 4. PLOTTING ---
 plt.figure(figsize=(10, 6))
 
-# We skip l=0 (mean value) as it dominates the plot
-start_l = 5
-end_l = 200 # We stop before the noise floor/aliasing at high l
+# Plot All Data
+start_plot = 4
+end_plot = 200
+plt.loglog(degrees[start_plot:end_plot], power_per_l[start_plot:end_plot],
+           'b-', alpha=0.5, label='Raw Spectrum Data')
 
-x = degrees[start_l:end_l]
-y = power_per_l[start_l:end_l]
+# Plot the Regression Line
+# y = exp(intercept) * x^(slope)
+reg_line = np.exp(intercept) * x_fit**(slope)
+plt.loglog(x_fit, reg_line, 'k--', linewidth=2,
+           label=f'Regression (Fit l={fit_start}-{fit_end})\nSlope $\\beta$ = {beta_measured:.2f}')
 
-# Plot the Data
-plt.loglog(x, y, label='Simulation Spectrum', color='blue', linewidth=2)
+# Plot Theoretical Slope (Shifted to match regression height for comparison)
+# We anchor it to the middle of the regression line
+mid_x = x_fit[len(x_fit)//2]
+mid_y = np.exp(intercept) * mid_x**(slope)
+theory_line = mid_y * (x_fit / mid_x)**(-beta_theory)
 
-# 5. Plot the Theoretical Slope
-# Theory: E(l) ~ l ^ -beta
-# beta = 1 + 2H
-H_target = 0.4
-beta = 1.0 + 2.0 * H_target
-
-# Create a reference line that starts at the same height as our data
-# y = C * x^-beta  =>  log(y) = -beta * log(x) + C
-reference_line = y[0] * (x / x[0])**(-beta)
-
-plt.loglog(x, reference_line, 'r--', label=f'Theory (H={H_target}, $\\beta$={beta})')
+plt.loglog(x_fit, theory_line, 'r:', linewidth=2,
+           label=f'Theory ($\\beta$ = {beta_theory:.2f})')
 
 plt.xlabel('Spherical Harmonic Degree (l)')
 plt.ylabel('Power Spectrum E(l)')
-plt.title(f'Multifractal Verification (Target H={H_target})')
+plt.title(f'Verification: Measured $\\beta={beta_measured:.2f}$ vs Theory $\\beta={beta_theory:.2f}$')
 plt.legend()
 plt.grid(True, which="both", ls="-", alpha=0.5)
 
-plt.savefig("Spectrum_Verification.png")
+plt.savefig("Spectrum_Regression.png")
 plt.show()

@@ -95,10 +95,9 @@ public class SimulationController : MonoBehaviour
         cascadeShader.SetTexture(_kernelHandle, "GradientTex", _gradientTexture);
         cascadeShader.SetTexture(_kernelHandle, "Result", RenderTexture);
         
-        if (earthTexture != null)
-        {
-            cascadeShader.SetTexture(_kernelHandle, "EarthTex", earthTexture);
-        }
+        // If earthTexture is assigned, use it. Otherwise, use a default black texture.
+        Texture texToPass = earthTexture != null ? earthTexture : Texture2D.blackTexture;
+        cascadeShader.SetTexture(_kernelHandle, "EarthTex", texToPass);
 
         int threadGroups = textureResolution / 8;
         cascadeShader.Dispatch(_kernelHandle, threadGroups, threadGroups, 1);

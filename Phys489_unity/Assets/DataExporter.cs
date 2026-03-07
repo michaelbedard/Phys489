@@ -51,7 +51,7 @@ public class DataExporter : MonoBehaviour
             sb.Append("\n");
         }
 
-        string path = Path.Combine(Application.dataPath, "AtmosphereData.csv");
+        string path = Path.Combine(Application.dataPath, "../../Phys489_python/AtmosphereData.csv");
         File.WriteAllText(path, sb.ToString());
         
         Debug.Log($"Success! Saved to: {path}");

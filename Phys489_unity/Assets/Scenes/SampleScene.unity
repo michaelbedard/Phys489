@@ -156,10 +156,10 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   cascadeShader: {fileID: 7200000, guid: 5d72c7394c0493c4fbe9b511c6e5a14b, type: 3}
   textureResolution: 1024
-  earthTexture: {fileID: 0}
+  earthTexture: {fileID: 2800000, guid: 3031a808393919845b77ea7bf137393a, type: 3}
   irColorMap:
     serializedVersion: 2
-    key0: {r: 0, g: 0, b: 0, a: 1}
+    key0: {r: 0, g: 0, b: 0, a: 0}
     key1: {r: 1, g: 1, b: 1, a: 1}
     key2: {r: 0, g: 0, b: 0, a: 0}
     key3: {r: 0, g: 0, b: 0, a: 0}
@@ -187,8 +187,8 @@ MonoBehaviour:
     m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
-  C1: 0.8
-  H: 0.4
+  C1: 0.1
+  H: 0.5
 --- !u!135 &7063936
 SphereCollider:
   m_ObjectHideFlags: 0
