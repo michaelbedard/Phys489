@@ -12,17 +12,20 @@ public class SimulationController : MonoBehaviour
     private Texture2D _gradientTexture;
 
     [Header("UM Parameters")]
-    [Range(0, 1)] public float C1 = 1.0f; 
+    [Range(0, 1)] public float C1 = 1.0f;
     [Range(0, 1)] public float H = 0.3f;
 
+    [Header("Cascade Initialization")]
+    [Tooltip("Z-offset into the 3D noise space at t=0. Avoids the degenerate z=0 slice. Physically neutral — the noise field is statistically homogeneous.")]
+    public float initialZOffset = 5.0f;
+
     public RenderTexture RenderTexture { get; private set; }
+    public ComputeBuffer PhysicsBuffer { get; private set; }
     private Material _planetMaterial;
     private int _kernelHandle;
 
     void Start()
     {
-        SetupDefaultThermalGradient();
-        
         InitTexture();
         InitGradient(); 
         InitShader();
@@ -34,32 +37,10 @@ public class SimulationController : MonoBehaviour
         RenderTexture.enableRandomWrite = true;
         RenderTexture.Create();
 
+        PhysicsBuffer = new ComputeBuffer(textureResolution * textureResolution, sizeof(float));
+
         _planetMaterial = GetComponent<Renderer>().material;
         _planetMaterial.mainTexture = RenderTexture;
-    }
-
-    void SetupDefaultThermalGradient()
-    {
-        // Only override if the user hasn't set up a custom gradient
-        // (Simple check: if it has default alpha keys, we assume it's fresh)
-        if (irColorMap == null || irColorMap.colorKeys.Length < 2)
-        {
-            irColorMap = new Gradient();
-
-            // 0.0 (Warm Surface) -> Black/Dark Grey
-            // 0.5 (Low Clouds)   -> Mid Grey
-            // 1.0 (High Storms)  -> Bright White
-            GradientColorKey[] colorKeys = new GradientColorKey[3];
-            colorKeys[0] = new GradientColorKey(new Color(0.1f, 0.1f, 0.1f), 0.0f);
-            colorKeys[1] = new GradientColorKey(new Color(0.5f, 0.5f, 0.5f), 0.6f);
-            colorKeys[2] = new GradientColorKey(Color.white, 1.0f);
-
-            GradientAlphaKey[] alphaKeys = new GradientAlphaKey[2];
-            alphaKeys[0] = new GradientAlphaKey(1.0f, 0.0f);
-            alphaKeys[1] = new GradientAlphaKey(1.0f, 1.0f);
-
-            irColorMap.SetKeys(colorKeys, alphaKeys);
-        }
     }
 
     void InitGradient()
@@ -88,23 +69,40 @@ public class SimulationController : MonoBehaviour
         InitGradient(); 
 
         cascadeShader.SetFloat("Time", Time.time);
+        cascadeShader.SetFloat("InitialZOffset", initialZOffset);
         cascadeShader.SetFloat("C1", C1);
         cascadeShader.SetFloat("H", H);
         
         // Pass the textures
         cascadeShader.SetTexture(_kernelHandle, "GradientTex", _gradientTexture);
         cascadeShader.SetTexture(_kernelHandle, "Result", RenderTexture);
+        cascadeShader.SetBuffer(_kernelHandle, "PhysicsData", PhysicsBuffer);
         
         // If earthTexture is assigned, use it. Otherwise, use a default black texture.
         Texture texToPass = earthTexture != null ? earthTexture : Texture2D.blackTexture;
         cascadeShader.SetTexture(_kernelHandle, "EarthTex", texToPass);
 
+        cascadeShader.SetVector("NoiseOrigin", Vector3.zero);
+
         int threadGroups = textureResolution / 8;
         cascadeShader.Dispatch(_kernelHandle, threadGroups, threadGroups, 1);
+    }
+
+    // Dispatches the cascade at a given noise origin and returns the raw field data.
+    // Used by DataExporter to capture independent realizations without waiting.
+    public float[] CaptureSnapshot(Vector3 noiseOrigin)
+    {
+        cascadeShader.SetVector("NoiseOrigin", noiseOrigin);
+        cascadeShader.Dispatch(_kernelHandle, textureResolution / 8, textureResolution / 8, 1);
+
+        float[] data = new float[textureResolution * textureResolution];
+        PhysicsBuffer.GetData(data); // synchronizing call — waits for GPU to finish
+        return data;
     }
 
     void OnDestroy()
     {
         if (RenderTexture != null) RenderTexture.Release();
+        if (PhysicsBuffer != null) PhysicsBuffer.Release();
     }
 }

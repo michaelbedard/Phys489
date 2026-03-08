@@ -1,6 +1,7 @@
 #pragma kernel CSMain
 
 RWTexture2D<float4> Result;
+RWStructuredBuffer<float> PhysicsData;
 Texture2D<float4> GradientTex;
 Texture2D<float4> EarthTex;
 SamplerState _LinearClamp;
@@ -9,6 +10,8 @@ SamplerState _LinearClamp;
 float Time;
 float C1;
 float H;
+float InitialZOffset;
+float3 NoiseOrigin; // Per-snapshot random offset for independent realizations
 
 static const float PI = 3.14159265359;
 
@@ -79,8 +82,8 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     spherePos.z = sin(theta) * sin(phi);
 
     float rotationSpeed = 0.2;
-    float3 drift = float3(sin(Time * rotationSpeed), cos(Time * rotationSpeed), Time * 0.1);
-    float3 samplePos = spherePos + drift;
+    float3 drift = float3(sin(Time * rotationSpeed), cos(Time * rotationSpeed), InitialZOffset + Time * 0.1);
+    float3 samplePos = spherePos + drift + NoiseOrigin;
 
     // --- TRUE MULTIPLICATIVE CASCADE ---
     
@@ -114,28 +117,19 @@ void CSMain (uint3 id : SV_DispatchThreadID)
     // This creates the "Spikes" and the "Singularities"
     float fieldIntensity = exp(log_field);
 
-    // --- VISUALIZATION ---
-    // For the CSV Export, we want the RAW fieldIntensity.
-    // However, fieldIntensity can get HUGE (it's a multifractal!).
-    // For the Gradient Map, we compress it slightly to fit 0..1
-    
-    // Important: For your Python Analysis, you are analyzing THIS output.
-    // We visualize 'compressed' data, but for Physics check, 
-    // you might want to export 'fieldIntensity' directly.
-    
-    // Simple compression for visual sanity:
-    float displayValue = saturate(fieldIntensity * 0.2); 
+    // --- PHYSICS DATA OUTPUT ---
+    // Raw dressed flux, always written for export (press X in Play Mode).
+    PhysicsData[id.y * width + id.x] = fieldIntensity;
 
-    // Composite with Earth
+    // --- VISUALIZATION ---
+    // Log tone-map compresses the multifractal dynamic range into [0,1] for display only.
+    // fieldIntensity has a long upper tail (singularities), so log scaling is appropriate.
+    // Adjust tonemapScale to taste: lower = brighter overall, higher = more contrast in peaks.
+    float tonemapScale = 3.0;
+    float displayValue = saturate(log(1.0 + fieldIntensity) / log(1.0 + tonemapScale));
+
     float4 earthColor = EarthTex.SampleLevel(_LinearClamp, uv, 0);
     float4 cloudColor = GradientTex.SampleLevel(_LinearClamp, float2(displayValue, 0.5), 0);
-    
-    // Alpha depends on intensity
-    float alpha = saturate(fieldIntensity - 0.2); 
-    
-    // FOR DATA EXPORT ONLY (Uncomment this line when pressing X)
-    // Result[id.xy] = float4(fieldIntensity, 0, 0, 1);
-
-    // FOR VISUALS (Comment this out when pressing X)
+    float alpha = saturate(displayValue * 1.5);
     Result[id.xy] = lerp(earthColor, cloudColor, alpha);
 }

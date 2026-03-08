@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using System.IO;
 using System.Text;
 
@@ -7,54 +7,62 @@ public class DataExporter : MonoBehaviour
     [SerializeField]
     private SimulationController simController;
 
+    [Header("Snapshot Capture")]
+    [Tooltip("Number of independent realizations to capture on X press.")]
+    public int snapshotCount = 50;
+
     void Update()
     {
         if (Input.GetKeyDown(KeyCode.X))
         {
-            if (simController != null && simController.RenderTexture != null)
+            if (simController != null && simController.PhysicsBuffer != null)
             {
-                ExportToCsv(simController.RenderTexture);
+                CaptureSnapshots();
             }
             else
             {
-                Debug.LogError("Simulation Controller or Texture not ready!");
+                Debug.LogError("Simulation Controller or Physics Buffer not ready!");
             }
         }
     }
 
-    void ExportToCsv(RenderTexture source)
+    void CaptureSnapshots()
     {
-        // 1. Setup temp texture
-        Texture2D tempTex = new Texture2D(source.width, source.height, TextureFormat.RFloat, false);
-        
-        RenderTexture.active = source;
-        tempTex.ReadPixels(new Rect(0, 0, source.width, source.height), 0, 0);
-        tempTex.Apply();
-        RenderTexture.active = null;
+        Debug.Log($"Capturing {snapshotCount} independent snapshots...");
 
-        // 2. Get Data
-        Color[] pixels = tempTex.GetPixels();
+        string folder = Path.GetFullPath(Path.Combine(Application.dataPath, "../../Phys489_python/snapshots"));
+        Directory.CreateDirectory(folder);
+
+        for (int i = 0; i < snapshotCount; i++)
+        {
+            // Random origin in a large range — any two points >1 unit apart are decorrelated.
+            Vector3 noiseOrigin = new Vector3(
+                Random.Range(0f, 100f),
+                Random.Range(0f, 100f),
+                Random.Range(0f, 100f)
+            );
+
+            float[] data = simController.CaptureSnapshot(noiseOrigin);
+            SaveCsv(data, simController.textureResolution, Path.Combine(folder, $"snapshot_{i:D3}.csv"));
+        }
+
+        Debug.Log($"Done. {snapshotCount} snapshots saved to: {folder}");
+    }
+
+    void SaveCsv(float[] data, int resolution, string path)
+    {
         StringBuilder sb = new StringBuilder();
 
-        Debug.Log("Exporting Physics Data...");
-
-        for (int y = 0; y < tempTex.height; y++)
+        for (int y = 0; y < resolution; y++)
         {
-            for (int x = 0; x < tempTex.width; x++)
+            for (int x = 0; x < resolution; x++)
             {
-                // We read the RED channel. 
-                // IMPORTANT: This data depends on your Shader output.
-                float val = pixels[y * tempTex.width + x].r;
-                sb.Append(val.ToString("F5"));
-                if (x < tempTex.width - 1) sb.Append(",");
+                sb.Append(data[y * resolution + x].ToString("F5"));
+                if (x < resolution - 1) sb.Append(",");
             }
             sb.Append("\n");
         }
 
-        string path = Path.Combine(Application.dataPath, "../../Phys489_python/AtmosphereData.csv");
         File.WriteAllText(path, sb.ToString());
-        
-        Debug.Log($"Success! Saved to: {path}");
-        Destroy(tempTex);
     }
 }
