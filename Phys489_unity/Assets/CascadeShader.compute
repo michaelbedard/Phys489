@@ -1,135 +1,38 @@
 #pragma kernel CSMain
 
-RWTexture2D<float4> Result;
-RWStructuredBuffer<float> PhysicsData;
-Texture2D<float4> GradientTex;
-Texture2D<float4> EarthTex;
-SamplerState _LinearClamp;
+// Cloud visualization shader.
+// The UM cascade field is pre-computed by FIFGenerator and supplied as FIFFieldTex.
+// This shader composites the cloud layer over the terrain albedo and applies
+// the IR colour gradient, writing the final result to the display RenderTexture.
 
-// UM PARAMETERS
-float Time;
-float C1;
-float H;
-float InitialZOffset;
-float3 NoiseOrigin; // Per-snapshot random offset for independent realizations
+// --- OUTPUTS ---
+RWTexture2D<float4> Result;      // Cloud composite RenderTexture (assigned to PlanetMat)
 
-static const float PI = 3.14159265359;
+// --- TEXTURES ---
+Texture2D<float>  FIFFieldTex;  // Pre-computed dressed cloud field: exp(log_field)
+Texture2D<float4> GradientTex;  // IR colour gradient LUT (256x1)
+Texture2D<float4> AlbedoTex;    // Terrain colour RenderTexture from TerrainShader
+SamplerState      _LinearClamp;
 
-// --- HELPER FUNCTIONS ---
-
-// 3D Hash: STANDARD (No Time variable here!)
-float hash(float3 p) {
-    p = frac(p * float3(123.34, 456.21, 789.12));
-    p += dot(p, p + 45.32);
-    return frac(p.x * p.y * p.z);
-}
-
-// 3D Gaussian: Deterministic (Same ID always gives same noise)
-float gaussian(float3 id) {
-    float u1 = hash(id + float3(0.0, 0.0, 0.0));
-    float u2 = hash(id + float3(1.0, 1.0, 1.0)); // Fixed offsets
-    
-    // Box-Muller
-    float r = sqrt(-2.0 * log(max(u1, 0.00001))); 
-    float theta = 2.0 * PI * u2;
-    return r * cos(theta);
-}
-
-// 3D Noise with Smooth Interpolation
-float smoothGaussianNoise(float3 pos) {
-    float3 gridId = floor(pos);
-    float3 f = frac(pos);
-    
-    // Smoothstep
-    f = f * f * (3.0 - 2.0 * f);
-
-    // Sample neighbors
-    float n000 = gaussian(gridId + float3(0,0,0));
-    float n100 = gaussian(gridId + float3(1,0,0));
-    float n010 = gaussian(gridId + float3(0,1,0));
-    float n110 = gaussian(gridId + float3(1,1,0));
-    float n001 = gaussian(gridId + float3(0,0,1));
-    float n101 = gaussian(gridId + float3(1,0,1));
-    float n011 = gaussian(gridId + float3(0,1,1));
-    float n111 = gaussian(gridId + float3(1,1,1));
-
-    // Trilinear Interpolation
-    float nx00 = lerp(n000, n100, f.x);
-    float nx10 = lerp(n010, n110, f.x);
-    float nx01 = lerp(n001, n101, f.x);
-    float nx11 = lerp(n011, n111, f.x);
-
-    float nxy0 = lerp(nx00, nx10, f.y);
-    float nxy1 = lerp(nx01, nx11, f.y);
-
-    return lerp(nxy0, nxy1, f.z);
-}
-
-[numthreads(8,8,1)]
-void CSMain (uint3 id : SV_DispatchThreadID)
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
 {
     uint width, height;
     Result.GetDimensions(width, height);
-    
-    // 1. Mapping
+
     float2 uv = float2((float)id.x / width, (float)id.y / height);
-    float theta = uv.y * PI;      
-    float phi = uv.x * 2.0 * PI;  
-    
-    float3 spherePos;
-    spherePos.x = sin(theta) * cos(phi);
-    spherePos.y = cos(theta);            
-    spherePos.z = sin(theta) * sin(phi);
 
-    float rotationSpeed = 0.2;
-    float3 drift = float3(sin(Time * rotationSpeed), cos(Time * rotationSpeed), InitialZOffset + Time * 0.1);
-    float3 samplePos = spherePos + drift + NoiseOrigin;
-
-    // --- TRUE MULTIPLICATIVE CASCADE ---
-    
-    float log_field = 0.0;
-    float scale = 2.0; 
-    int octaves = 10; // More detail needed for multiplicative
-    
-    // We need to calculate the variance for the Log-Normal process
-    // For base-2 cascade: sigma^2 = 2 * C1 * ln(2)
-    float ln2 = 0.693147;
-    float sigma = sqrt(2.0 * C1 * ln2);
-    float correction = C1 * ln2; // sigma^2 / 2
-
-    for (int i = 0; i < octaves; i++)
-    {
-        float gamma_i = smoothGaussianNoise(samplePos * scale); 
-
-        // THE MULTIPLICATIVE FORMULA:
-        // We accumulate the logs: (Noise * Sigma) - (Mean Correction)
-        // We scale this accumulation by H to create the spectral slope
-        float layerVal = (gamma_i * sigma) - correction;
-        
-        // Weight by scale (H parameter)
-        log_field += layerVal * pow(scale, -H);
-
-        scale *= 2.0; 
-    }
-
-    // --- CRITICAL STEP: EXPONENTIATION ---
-    // This turns the Sum of Logs back into a Product of Multipliers
-    // This creates the "Spikes" and the "Singularities"
-    float fieldIntensity = exp(log_field);
-
-    // --- PHYSICS DATA OUTPUT ---
-    // Raw dressed flux, always written for export (press X in Play Mode).
-    PhysicsData[id.y * width + id.x] = fieldIntensity;
+    // --- CLOUD FIELD ---
+    // FIFFieldTex already contains exp(log_field) — the dressed multifractal flux.
+    float fieldIntensity = FIFFieldTex.SampleLevel(_LinearClamp, uv, 0);
 
     // --- VISUALIZATION ---
-    // Log tone-map compresses the multifractal dynamic range into [0,1] for display only.
-    // fieldIntensity has a long upper tail (singularities), so log scaling is appropriate.
-    // Adjust tonemapScale to taste: lower = brighter overall, higher = more contrast in peaks.
+    // Log tone-map compresses the multifractal dynamic range into [0,1] for display.
     float tonemapScale = 3.0;
     float displayValue = saturate(log(1.0 + fieldIntensity) / log(1.0 + tonemapScale));
 
-    float4 earthColor = EarthTex.SampleLevel(_LinearClamp, uv, 0);
+    float4 earthColor = AlbedoTex.SampleLevel(_LinearClamp, uv, 0);
     float4 cloudColor = GradientTex.SampleLevel(_LinearClamp, float2(displayValue, 0.5), 0);
-    float alpha = saturate(displayValue * 1.5);
-    Result[id.xy] = lerp(earthColor, cloudColor, alpha);
+    float  alpha      = saturate(displayValue * 1.5);
+    Result[id.xy]     = lerp(earthColor, cloudColor, alpha);
 }

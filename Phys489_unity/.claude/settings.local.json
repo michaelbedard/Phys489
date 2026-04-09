@@ -1,7 +1,22 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "Bash(ls:*)",
+      "WebFetch(domain:npg.copernicus.org)",
+      "WebFetch(domain:www.physics.mcgill.ca)",
+      "WebFetch(domain:www.cambridge.org)",
+      "WebFetch(domain:www.nature.com)",
+      "WebFetch(domain:vanhunteradams.com)",
+      "WebFetch(domain:arlpy.readthedocs.io)",
+      "WebFetch(domain:www.quantstart.com)",
+      "WebFetch(domain:geo.libretexts.org)",
+      "WebFetch(domain:www.dsprelated.com)",
+      "WebFetch(domain:en.wikipedia.org)",
+      "WebFetch(domain:commons.apache.org)",
+      "WebFetch(domain:towardsdatascience.com)",
+      "WebFetch(domain:courses.ems.psu.edu)",
+      "WebFetch(domain:glossary.ametsoc.org)"
     ]
   }
 }

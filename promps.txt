@@ -1,0 +1,2 @@
+in the mid term report, I am missing the Space-Time Anisotropy.  Look at prof lovejoy work on it and UM therory.  Give a summary of what he
+discovered, and how it can applied in this project to test his discoveries.  You can browse web

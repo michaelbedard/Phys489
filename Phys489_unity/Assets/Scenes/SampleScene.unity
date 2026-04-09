@@ -155,11 +155,12 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   cascadeShader: {fileID: 7200000, guid: 5d72c7394c0493c4fbe9b511c6e5a14b, type: 3}
+  terrainShader: {fileID: 7200000, guid: 89ebf6da00655df42af3bf5a2601533d, type: 3}
+  fifGenerator: {fileID: 7200000, guid: 9f00e89090ea1b246a0253f1cbc1a47f, type: 3}
   textureResolution: 1024
-  earthTexture: {fileID: 2800000, guid: 3031a808393919845b77ea7bf137393a, type: 3}
   irColorMap:
     serializedVersion: 2
-    key0: {r: 0, g: 0, b: 0, a: 0}
+    key0: {r: 1, g: 1, b: 1, a: 0}
     key1: {r: 1, g: 1, b: 1, a: 1}
     key2: {r: 0, g: 0, b: 0, a: 0}
     key3: {r: 0, g: 0, b: 0, a: 0}
@@ -187,8 +188,48 @@ MonoBehaviour:
     m_ColorSpace: -1
     m_NumColorKeys: 2
     m_NumAlphaKeys: 2
+  terrainColorMap:
+    serializedVersion: 2
+    key0: {r: 0, g: 0, b: 0, a: 1}
+    key1: {r: 0, g: 1, b: 0.0683229, a: 1}
+    key2: {r: 0, g: 0, b: 0, a: 0}
+    key3: {r: 0, g: 0, b: 0, a: 0}
+    key4: {r: 0, g: 0, b: 0, a: 0}
+    key5: {r: 0, g: 0, b: 0, a: 0}
+    key6: {r: 0, g: 0, b: 0, a: 0}
+    key7: {r: 0, g: 0, b: 0, a: 0}
+    ctime0: 0
+    ctime1: 65535
+    ctime2: 0
+    ctime3: 0
+    ctime4: 0
+    ctime5: 0
+    ctime6: 0
+    ctime7: 0
+    atime0: 0
+    atime1: 65535
+    atime2: 0
+    atime3: 0
+    atime4: 0
+    atime5: 0
+    atime6: 0
+    atime7: 0
+    m_Mode: 0
+    m_ColorSpace: -1
+    m_NumColorKeys: 2
+    m_NumAlphaKeys: 2
   C1: 0.1
-  H: 0.5
+  H: 0.33
+  alpha: 1.2
+  C1_albedo: 0.12
+  H_albedo: 0.66
+  alpha_albedo: 1.79
+  windVelocity: {x: 0, y: 0}
+  enableEvolution: 0
+  z: 0.5
+  tau0: 30
+  showAlbedo: 0
+  showClouds: 1
 --- !u!135 &7063936
 SphereCollider:
   m_ObjectHideFlags: 0
@@ -491,6 +532,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   simController: {fileID: 7063935}
+  snapshotCount: 50
+  timeSeriesFrames: 200
+  timeSeriesInterval: 0.1
 --- !u!4 &1968450422
 Transform:
   m_ObjectHideFlags: 0

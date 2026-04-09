@@ -1,0 +1,283 @@
+// FIFGenerator.compute
+// Fractionally Integrated Flux (FIF) cascade generator.
+//
+// Replaces the per-pixel spectral-wave loop with a single 2D inverse FFT.
+// Every Fourier mode in each octave band gets an independent alpha-stable
+// amplitude, so there are no plane-wave artifacts and the spectral slope
+// beta = 1 + 2H - K(2) is exact by construction.
+//
+// Pipeline (called from SimulationController each frame for clouds,
+//           once at startup / param-change for albedo):
+//
+//   GenerateSpectrum  -> BaseSpectrumBuffer  (per realization)
+//   PhaseShift        -> SpectrumBuffer      (per frame, copies + advects)
+//   IFFTRow           -> SpectrumBuffer      (in-place, rows)
+//   IFFTCol           -> SpectrumBuffer      (in-place, columns)
+//   ExtractField      -> LogFieldTex + PhysicsData
+//
+// Anisotropy extension: replace |k| = sqrt(kx^2+ky^2) in GenerateSpectrum
+// with the anisotropic norm |G^-1 k| from the GSI generator matrix G.
+
+#pragma kernel GenerateSpectrum
+#pragma kernel EvolveSpectrum
+#pragma kernel PhaseShift
+#pragma kernel IFFTRow
+#pragma kernel IFFTCol
+#pragma kernel ExtractField
+
+#pragma target 5.0
+#include "NoiseUtils.cginc"
+
+// Texture size — must match SimulationController.textureResolution.
+static const uint  N     = 1024;
+static const uint  LOG2N = 10;    // log2(1024)
+
+// --- PARAMETERS ---
+float  C1;
+float  H;
+float  Alpha;
+int    Seed;           // per-realization seed (varied by SimulationController)
+float  Time;           // Unity Time.time, used for phase-shift advection
+float2 WindVelocity;   // UV-space advection velocity (units: cycles per second)
+float  Dt;             // Time.deltaTime — frame interval in seconds (OU evolution)
+float  Tau0;           // base correlation time at |k|=1 (seconds)
+float  Gz;             // dynamical scaling exponent z: tau(k) = Tau0 * |k|^(-Gz)
+int    FrameCount;     // monotonic frame counter for temporal RNG seeding
+
+// --- BUFFERS ---
+RWStructuredBuffer<float2> BaseSpectrumBuffer;  // persistent base Fourier coefficients (N x N)
+RWStructuredBuffer<float2> SpectrumBuffer;      // working buffer — modified in-place by IFFT
+RWTexture2D<float>         LogFieldTex;         // output: exp(log_field), sampled by cascade shaders
+RWStructuredBuffer<float>  PhysicsData;         // output: same values, row-major for CSV export
+
+// Complex multiply
+float2 cmul(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y,
+                  a.x * b.y + a.y * b.x);
+}
+
+// =============================================================================
+// Kernel: GenerateSpectrum
+// Fills BaseSpectrumBuffer with octave-weighted CMS alpha-stable Fourier
+// coefficients.  One thread per Fourier mode (8x8 thread groups).
+// =============================================================================
+[numthreads(8, 8, 1)]
+void GenerateSpectrum(uint3 id : SV_DispatchThreadID)
+{
+    // Map index to signed frequency  (FFT layout: [0..N/2-1, -N/2..-1])
+    int ix = (int)id.x;
+    int iy = (int)id.y;
+    int kx = ix < (int)(N / 2) ? ix : ix - (int)N;
+    int ky = iy < (int)(N / 2) ? iy : iy - (int)N;
+
+    float k_mag = sqrt((float)(kx * kx + ky * ky));
+
+    // DC and sub-pixel modes: zero mean log-field
+    if (k_mag < 1.0)
+    {
+        BaseSpectrumBuffer[id.y * N + id.x] = float2(0.0, 0.0);
+        return;
+    }
+
+    // CMS alpha-stable amplitude (unit scale), seeded by mode + realization seed.
+    // levyStable() from NoiseUtils.cginc uses hash(id) and hash(id+1) internally.
+    float amp = levyStable(float3((float)kx, (float)ky, (float)Seed), Alpha);
+
+    // Random phase — uses a different hash offset to be independent of amp.
+    float phase = hash(float3((float)kx + 0.5, (float)ky + 0.5, (float)Seed + 9973.0))
+                  * 2.0 * PI;
+
+    // Continuous power-law amplitude: |k|^{-(H+1)}.
+    // In 2D, modes at degree l number ~2*pi*l, so <|F[k]|^2> ∝ |k|^{-2(H+1)}
+    // gives E(l) ∝ l * |k|^{-2(H+1)} = l^{-(1+2H)}, i.e. beta = 1+2H.
+    // The UM amplitude scale (C1*ln2)^{1/alpha} sets the intermittency weight.
+    // Theory: Schertzer & Lovejoy 1987; FIF formulation.
+    float scale_factor = pow(C1 * LN2, 1.0 / Alpha);
+    float weight       = scale_factor * pow(k_mag, -(H + 1.0));
+
+    // Set complex coefficient: amp * weight * exp(i * phase)
+    BaseSpectrumBuffer[id.y * N + id.x] = float2(amp * weight * cos(phase), amp * weight * sin(phase));
+}
+
+// =============================================================================
+// Kernel: PhaseShift
+// Copies BaseSpectrumBuffer -> SpectrumBuffer with a time-dependent phase
+// that simulates advection (Taylor frozen-turbulence hypothesis):
+//   coeff(k, t) = coeff(k, 0) * exp(i * 2pi * (kx*vx + ky*vy) * t)
+// For static fields (albedo), call with Time = 0 — result is a plain copy.
+// =============================================================================
+[numthreads(8, 8, 1)]
+void PhaseShift(uint3 id : SV_DispatchThreadID)
+{
+    int ix = (int)id.x;
+    int iy = (int)id.y;
+    int kx = ix < (int)(N / 2) ? ix : ix - (int)N;
+    int ky = iy < (int)(N / 2) ? iy : iy - (int)N;
+
+    float angle  = 2.0 * PI * ((float)kx * WindVelocity.x
+                              + (float)ky * WindVelocity.y) * Time;
+    float2 shift = float2(cos(angle), sin(angle));
+
+    SpectrumBuffer[id.y * N + id.x] = cmul(BaseSpectrumBuffer[id.y * N + id.x], shift);
+}
+
+// =============================================================================
+// Kernel: EvolveSpectrum
+// Ornstein-Uhlenbeck update of BaseSpectrumBuffer — implements space-time
+// anisotropy (UM dynamical scaling exponent z).
+//
+// Each Fourier mode (kx, ky) has a scale-dependent correlation time:
+//   tau(k) = Tau0 * |k|^{-Gz}
+// The OU update blends the existing coefficient with fresh CMS noise:
+//   new = a * old + sqrt(1 - a^2) * fresh
+// where a = exp(-Dt / tau(k)).
+//
+// This preserves the instantaneous spatial power spectrum (|new|^2 in expectation
+// equals weight(k)^2 at all times) while giving temporal decorrelation that
+// satisfies omega ~ |k|^Gz in the temporal Fourier domain.
+// Large scales (small |k|) have long tau -> evolve slowly.
+// Small scales (large |k|) have short tau -> evolve rapidly.
+//
+// Dispatch: (N/8, N/8, 1) groups. Modifies BaseSpectrumBuffer in-place.
+// Must run BEFORE PhaseShift each frame.
+// =============================================================================
+[numthreads(8, 8, 1)]
+void EvolveSpectrum(uint3 id : SV_DispatchThreadID)
+{
+    int ix = (int)id.x;
+    int iy = (int)id.y;
+    int kx = ix < (int)(N / 2) ? ix : ix - (int)N;
+    int ky = iy < (int)(N / 2) ? iy : iy - (int)N;
+
+    float k_mag = sqrt((float)(kx * kx + ky * ky));
+
+    // DC mode stays zero (mean-zero log-field)
+    if (k_mag < 1.0)
+        return;
+
+    // Scale-dependent correlation time: large |k| -> short tau -> fast evolution.
+    float tau_k     = Tau0 * pow(k_mag, -Gz);
+    float a         = clamp(exp(-Dt / tau_k), 0.0, 1.0);
+    // Alpha-stable stationarity: scale^α = a^α·scale^α + b^α  →  b = (1 - a^α)^{1/α}.
+    // Using sqrt(1-a²) (Gaussian formula) causes cumulative energy growth for α < 2.
+    float noise_scale = pow(max(1e-12, 1.0 - pow(a, Alpha)), 1.0 / Alpha);
+
+    // Fresh CMS alpha-stable sample, seeded by (kx, ky, FrameCount) for temporal independence.
+    float amp_new   = levyStable(float3((float)kx, (float)ky, (float)FrameCount), Alpha);
+    float phase_new = hash(float3((float)kx + 0.5, (float)ky + 0.5, (float)FrameCount + 9973.0))
+                      * 2.0 * PI;
+
+    // Same spectral weighting as GenerateSpectrum.
+    float weight = pow(C1 * LN2, 1.0 / Alpha) * pow(k_mag, -(H + 1.0));
+    float2 fresh = float2(amp_new * weight * cos(phase_new),
+                          amp_new * weight * sin(phase_new));
+
+    // OU blend: preserves stationary scale parameter of each mode.
+    uint idx = id.y * N + id.x;
+    BaseSpectrumBuffer[idx] = a * BaseSpectrumBuffer[idx] + noise_scale * fresh;
+}
+
+// =============================================================================
+// Shared memory for IFFT kernels (8 KB per thread group, within DX11 32 KB limit)
+// =============================================================================
+groupshared float2 gs_data[1024];
+
+// =============================================================================
+// Kernel: IFFTRow
+// In-place radix-2 Cooley-Tukey inverse FFT along each row.
+// One workgroup of 1024 threads processes one row.
+// Dispatch: (N, 1, 1) groups.
+// =============================================================================
+[numthreads(1024, 1, 1)]
+void IFFTRow(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    uint row = gid.x;
+    uint col = tid.x;
+
+    // Bit-reversal permutation load into shared memory
+    uint rev        = reversebits(col) >> (32u - LOG2N);
+    gs_data[rev]    = SpectrumBuffer[row * N + col];
+    GroupMemoryBarrierWithGroupSync();
+
+    // Butterfly stages (positive twiddle angle = inverse DFT)
+    for (uint s = 0; s < LOG2N; s++)
+    {
+        uint half = 1u << s;
+        uint sz   = half << 1u;
+        uint p    = col % sz;
+        uint g    = col / sz;
+
+        if (p < half)
+        {
+            uint   idx_u = g * sz + p;
+            uint   idx_v = idx_u + half;
+            float  angle = 2.0 * PI * (float)p / (float)sz;
+            float2 w     = float2(cos(angle), sin(angle));
+            float2 u     = gs_data[idx_u];
+            float2 v     = cmul(w, gs_data[idx_v]);
+            gs_data[idx_u] = u + v;
+            gs_data[idx_v] = u - v;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // No normalisation — the |k|^{-(H+1)} weighting already gives the correct
+    // field magnitude without a 1/N^2 rescaling factor.
+    SpectrumBuffer[row * N + col] = gs_data[col];
+}
+
+// =============================================================================
+// Kernel: IFFTCol
+// In-place radix-2 Cooley-Tukey inverse FFT along each column.
+// One workgroup of 1024 threads processes one column.
+// Dispatch: (N, 1, 1) groups.
+// =============================================================================
+[numthreads(1024, 1, 1)]
+void IFFTCol(uint3 gid : SV_GroupID, uint3 tid : SV_GroupThreadID)
+{
+    uint col = gid.x;
+    uint row = tid.x;
+
+    uint rev     = reversebits(row) >> (32u - LOG2N);
+    gs_data[rev] = SpectrumBuffer[row * N + col];
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint s = 0; s < LOG2N; s++)
+    {
+        uint half = 1u << s;
+        uint sz   = half << 1u;
+        uint p    = row % sz;
+        uint g    = row / sz;
+
+        if (p < half)
+        {
+            uint   idx_u = g * sz + p;
+            uint   idx_v = idx_u + half;
+            float  angle = 2.0 * PI * (float)p / (float)sz;
+            float2 w     = float2(cos(angle), sin(angle));
+            float2 u     = gs_data[idx_u];
+            float2 v     = cmul(w, gs_data[idx_v]);
+            gs_data[idx_u] = u + v;
+            gs_data[idx_v] = u - v;
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    SpectrumBuffer[row * N + col] = gs_data[row];
+}
+
+// =============================================================================
+// Kernel: ExtractField
+// Reads the real part of the IFFT output (= log_field), exponentiates it,
+// and writes the dressed field to LogFieldTex and PhysicsData.
+// =============================================================================
+[numthreads(8, 8, 1)]
+void ExtractField(uint3 id : SV_DispatchThreadID)
+{
+    float log_val   = SpectrumBuffer[id.y * N + id.x].x;            // real part
+    float field_val = exp(clamp(log_val, -20.0, 20.0));             // dressed field
+
+    LogFieldTex[id.xy]            = field_val;
+    PhysicsData[id.y * N + id.x] = field_val;
+}

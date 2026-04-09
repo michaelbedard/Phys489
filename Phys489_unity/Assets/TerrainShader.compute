@@ -1,0 +1,34 @@
+#pragma kernel CSMain
+
+// Terrain / albedo visualization shader.
+// The UM cascade field is pre-computed by FIFGenerator and supplied as AlbedoFIFFieldTex.
+// This shader applies the terrain colour gradient and writes the result to the
+// albedo RenderTexture that CascadeShader reads for cloud compositing.
+
+// --- OUTPUT ---
+RWTexture2D<float4> Result;          // Terrain colour RenderTexture (read as AlbedoTex by CascadeShader)
+
+// --- TEXTURES ---
+Texture2D<float>  AlbedoFIFFieldTex; // Pre-computed dressed albedo field: exp(log_field)
+Texture2D<float4> GradientTex;       // Terrain colour gradient LUT (256x1)
+SamplerState      _LinearClamp;
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    uint width, height;
+    Result.GetDimensions(width, height);
+
+    float2 uv = float2((float)id.x / width, (float)id.y / height);
+
+    // --- ALBEDO FIELD ---
+    // AlbedoFIFFieldTex contains exp(log_field) from the FIF albedo cascade.
+    float albedoIntensity = AlbedoFIFFieldTex.SampleLevel(_LinearClamp, uv, 0);
+
+    // --- VISUALIZATION ---
+    // Log tone-map matches the same scale used for cloud display.
+    float albedoDisplay = saturate(log(1.0 + albedoIntensity) / log(1.0 + 3.0));
+    float4 surfaceColor = GradientTex.SampleLevel(_LinearClamp, float2(albedoDisplay, 0.5), 0);
+
+    Result[id.xy] = surfaceColor;
+}
